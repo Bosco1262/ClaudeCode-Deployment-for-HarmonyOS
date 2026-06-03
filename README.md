@@ -1,4 +1,4 @@
-# 从零开始部署 Claude Code 完整教程（带 OpenAI 格式路由并支持 Agent 工具调用版）
+# 从零开始部署 Claude Code 完整教程（带单 OpenAI 格式API路由并支持 Agent 工具调用版）
 
 本教程仅依赖系统自带的 **Node.js** 和 **npm**。通过本地一个轻量级的纯 Node.js 脚本将 Claude Code 复杂的 **双向工具链请求和 SSE 流** 优雅地翻译给 OpenAI（或任何 OpenAI 兼容接口，如 DeepSeek），实现一键启动、退出自动清理。
 
@@ -118,11 +118,25 @@ function anthropicToOpenAI(anthBody) {
     temperature: anthBody.temperature ?? 1.0,
     stream: !!anthBody.stream,
   };
+  
+  // 翻译工具定义与策略控制
   if (anthBody.tools && anthBody.tools.length > 0) {
     oaiBody.tools = anthBody.tools.map(tool => ({
       type: 'function',
       function: { name: tool.name, description: tool.description, parameters: tool.input_schema }
     }));
+    
+    // 完美的工具选择策略翻译
+    if (anthBody.tool_choice) {
+      const tc = anthBody.tool_choice;
+      if (tc.type === 'auto') {
+        oaiBody.tool_choice = 'auto';
+      } else if (tc.type === 'any') {
+        oaiBody.tool_choice = 'required';
+      } else if (tc.type === 'tool') {
+        oaiBody.tool_choice = { type: 'function', function: { name: tc.name } };
+      }
+    }
   }
   return oaiBody;
 }
@@ -172,7 +186,8 @@ const server = http.createServer(async (req, res) => {
       log(`[Messages] Forwarding to OpenAI: model=${oaiBody.model}, stream=${oaiBody.stream}`);
       
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      // 长任务超宽裕容错机制 (120 秒)
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
 
       let response;
       try {
@@ -213,6 +228,34 @@ const server = http.createServer(async (req, res) => {
         let outputTokens = 0;
         let finalFinishReason = 'end_turn';
         
+        let textBlockOpened = false;
+        const toolBlockStates = {}; // 用原始的 OpenAI index 稳定作键追踪状态
+        let nextToolIdx = 1;        // 映射索引，文本块由于权重固定为 0，工具块必从 1 开始
+
+        const ensureTextBlockStart = () => {
+          if (!textBlockOpened) {
+            textBlockOpened = true;
+            res.write(`event: content_block_start\ndata: ${JSON.stringify({
+              type: "content_block_start", index: 0, content_block: { type: "text", text: "" }
+            })}\n\n`);
+          }
+        };
+
+        const closeAllBlocks = () => {
+          if (textBlockOpened) {
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+            textBlockOpened = false;
+          }
+          // 正确提取真正转换过后的 mapped index 关闭客户端对应的块
+          for (const key of Object.keys(toolBlockStates)) {
+            const state = toolBlockStates[key];
+            if (state && state.opened) {
+              res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: state.index })}\n\n`);
+              state.opened = false;
+            }
+          }
+        };
+
         res.write(`event: message_start\ndata: ${JSON.stringify({
           type: "message_start",
           message: {
@@ -220,10 +263,6 @@ const server = http.createServer(async (req, res) => {
             model: clientRequestedModel, stop_reason: null, stop_sequence: null,
             usage: { input_tokens: 0, output_tokens: 0 } 
           }
-        })}\n\n`);
-        
-        res.write(`event: content_block_start\ndata: ${JSON.stringify({
-          type: "content_block_start", index: 0, content_block: { type: "text", text: "" }
         })}\n\n`);
 
         const reader = response.body?.getReader();
@@ -234,22 +273,6 @@ const server = http.createServer(async (req, res) => {
 
         const decoder = new TextDecoder();
         let buffer = '';
-        let textBlockClosed = false;
-        const openedToolBlocks = {};
-
-        const closeAllBlocks = () => {
-          if (!textBlockClosed) {
-            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
-            textBlockClosed = true;
-          }
-          for (const idxStr of Object.keys(openedToolBlocks)) {
-            const idx = parseInt(idxStr, 10);
-            if (openedToolBlocks[idx]) {
-              res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: idx })}\n\n`);
-              delete openedToolBlocks[idx];
-            }
-          }
-        };
 
         try {
           while (true) {
@@ -273,7 +296,9 @@ const server = http.createServer(async (req, res) => {
                 if (chunk.usage) outputTokens = chunk.usage.completion_tokens || 0;
                 if (finishReason) finalFinishReason = finishReason;
                 
+                // 处理文本流延迟启动文本块
                 if (delta?.content) {
+                  ensureTextBlockStart();
                   res.write(`event: content_block_delta\ndata: ${JSON.stringify({
                     type: "content_block_delta",
                     index: 0,
@@ -281,20 +306,39 @@ const server = http.createServer(async (req, res) => {
                   })}\n\n`);
                 }
                 
+                // 完美的流式工具调用定位映射逻辑
                 if (delta?.tool_calls) {
                   for (const t of delta.tool_calls) {
-                    const idx = t.index + 1;
-                    if (!openedToolBlocks[idx]) {
-                      openedToolBlocks[idx] = true;
+                    const oaiIdx = t.index;
+                    if (oaiIdx === undefined) continue;
+
+                    let state = toolBlockStates[oaiIdx];
+                    if (!state) {
+                      const blockIdx = nextToolIdx++;
+                      state = {
+                        index: blockIdx,
+                        opened: false,
+                        id: t.id || `call_${Date.now()}_${blockIdx}`,
+                        name: t.function?.name || ''
+                      };
+                      toolBlockStates[oaiIdx] = state;
+                    }
+
+                    // 补全由于多流块拼装可能导致缺失的前序属性
+                    if (t.id) state.id = t.id;
+                    if (t.function?.name) state.name = t.function.name;
+
+                    if (!state.opened) {
+                      state.opened = true;
                       res.write(`event: content_block_start\ndata: ${JSON.stringify({
                         type: "content_block_start",
-                        index: idx,
-                        content_block: { type: "tool_use", id: t.id || `call_${Date.now()}`, name: t.function?.name || "" }
+                        index: state.index,
+                        content_block: { type: "tool_use", id: state.id, name: state.name }
                       })}\n\n`);
                     }
                     if (t.function?.arguments) {
                       res.write(`event: content_block_delta\ndata: ${JSON.stringify({
-                        type: "content_block_delta", index: idx, delta: { type: "input_json_delta", partial_json: t.function.arguments }
+                        type: "content_block_delta", index: state.index, delta: { type: "input_json_delta", partial_json: t.function.arguments }
                       })}\n\n`);
                     }
                   }
@@ -304,7 +348,13 @@ const server = http.createServer(async (req, res) => {
           }
           
           closeAllBlocks();
-          const stopReasonMap = { 'stop': 'end_turn', 'length': 'max_tokens', 'tool_calls': 'tool_use' };
+          const stopReasonMap = {
+            'stop': 'end_turn',
+            'length': 'max_tokens',
+            'tool_calls': 'tool_use',
+            'content_filter': 'end_turn',
+            'function_call': 'tool_use'
+          };
           res.write(`event: message_delta\ndata: ${JSON.stringify({
             type: "message_delta",
             delta: { stop_reason: stopReasonMap[finalFinishReason] || 'end_turn', stop_sequence: null },
@@ -325,7 +375,8 @@ const server = http.createServer(async (req, res) => {
         }
         const resContent = [];
         if (choice.message?.content) {
-          resContent.push({ type: 'text', text: choice.message.content });
+          const text = choice.message.content.trim();
+          if (text) resContent.push({ type: 'text', text });
         }
         if (choice.message?.tool_calls) {
           for (const t of choice.message.tool_calls) {
@@ -469,6 +520,7 @@ claude() {
     echo "🛑 正在关闭本地中转服务 (PID: ${PROXY_PID})..."
     kill "${PROXY_PID}" 2>/dev/null
     wait "${PROXY_PID}" 2>/dev/null
+    pkill -f "anthropic-proxy.mjs" 2>/dev/null
   fi
   echo "✅ 退出完毕，终端运行环境已复原！"
 }
@@ -519,9 +571,12 @@ $ claude
 ---
 
 ## 六、卸载
-删除 `~/.zshrc` 中的 `claude` 函数定义，然后删掉代理脚本和 `Claude Code`即可：
+删除 `~/.zshrc` 中的 `claude` 函数定义，然后删掉代理脚本和 `Claude Code` 相关文件即可：
 
 ```bash
-rm ~/anthropic-proxy.mjs
-npx clear-npx-cache
+rm ~/anthropic-proxy.mjs    # 删掉代理脚本
+rm ~/.anthropic-proxy.log   # 删掉代理脚本日志
+rm ~/.claude.json           # 删除Claude Code配置文件
+rm -rf ~/.claude            # 删除Claude Code本地文件
+npx clear-npx-cache         # 回车后将清除所有npx缓存，包含拉取的@anthropic-ai/claude-code@2.1.112
 ```
