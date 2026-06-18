@@ -1,5 +1,7 @@
 # 从零开始部署 Claude Code 完整教程（多模型槽位 + 双通道 + Agent 工具调用版）
 
+[简体中文](README.md) | [English](README_EN.md)
+
 本教程仅依赖系统自带的 **Node.js** 和 **npm**。通过本地一个轻量级的纯 Node.js 脚本将 Claude Code 复杂的 **双向工具链请求、Thinking 推理和 SSE 流** 优雅地翻译给 OpenAI（或任何 OpenAI 兼容接口，如 DeepSeek），实现一键启动、退出自动清理。
 
 > 代理脚本的详细技术说明（协议转换规则、SSE 流式状态机、Reasoning 降级机制等）请参阅 [anthropic-proxy脚本说明.md](anthropic-proxy脚本说明.md)。
