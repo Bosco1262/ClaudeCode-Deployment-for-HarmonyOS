@@ -294,3 +294,6 @@ rm ~/.claude.json           # 删除Claude Code配置文件
 rm -rf ~/.claude            # 删除Claude Code本地文件
 npx clear-npx-cache         # 回车后将清除所有npx缓存，包含拉取的@anthropic-ai/claude-code@2.1.112
 ```
+
+## 七、许可证
+本项目采用[MIT 许可证](LICENSE)
