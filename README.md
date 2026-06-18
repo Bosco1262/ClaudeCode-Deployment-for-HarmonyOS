@@ -68,7 +68,7 @@ claude() {
 
     # ▸ 主 API 配置
     local PRIMARY_API_FORMAT="openai"                        # 协议格式: "openai" 或 "anthropic"
-    local PRIMARY_AUTH_TYPE="api-key"                         # 授权类型: "api-key" 或 "bearer"
+    local PRIMARY_AUTH_TYPE="api-key"                        # 授权类型: "api-key" 或 "bearer"
     local PRIMARY_API_KEY="sk-your-primary-key"              # 授权密钥
     local PRIMARY_BASE_URL="https://api.openai.com"          # 接入端点
 
@@ -76,8 +76,8 @@ claude() {
     local ENABLE_SECONDARY_API="false"                       # 是否启用备 API 分流
     local SECONDARY_API_FORMAT="openai"                      # 协议格式: "openai" 或 "anthropic"
     local SECONDARY_AUTH_TYPE="api-key"                      # 授权类型: "api-key" 或 "bearer"
-    local SECONDARY_API_KEY="sk-your-secondary-key"         # 备用授权密钥
-    local SECONDARY_BASE_URL="https://api.openai.com"       # 备用接入端点
+    local SECONDARY_API_KEY="sk-your-secondary-key"          # 备用授权密钥
+    local SECONDARY_BASE_URL="https://api.openai.com"        # 备用接入端点
 
     # ┌─────────────────────────────────────────────────────────────┐
     # │ 2. 模型槽位配置 (4槽位 × 主备双通道)                            │
@@ -85,28 +85,28 @@ claude() {
 
     # ▸ 槽位 1：默认模型
     local Client_Model_Default="claude-sonnet-4-6"           # 客户端请求的模型名
-    local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Pro"  # 上游实际转发的模型名
-    local API_for_Default="PRIMARY"                          # 指向的 API 通道 (PRIMARY / SECONDARY)
+    local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # 上游实际转发的模型名
+    local API_for_Default="PRIMARY"                          # 指向的 API 通道 (PRIMARY/SECONDARY)
     local REASONING_for_Default="auto"                       # 推理深度 (auto/max/high/medium/low/none)
-                                                             #   auto: 根据 budget_tokens 自动映射，无 budget 时默认 medium
+                                                             #           └ auto: 根据 budget_tokens 自动映射，无 budget 时默认 medium
 
     # ▸ 槽位 2：Sonnet 模型
     local Client_Model_Sonnet="claude-sonnet-4-6"
-    local Upstream_Model_Sonnet="deepseek-ai/DeepSeek-V4-Pro"
+    local Upstream_Model_Sonnet="deepseek-ai/DeepSeek-V4-Flash"
     local API_for_Sonnet="PRIMARY"
     local REASONING_for_Sonnet="auto"
 
     # ▸ 槽位 3：Opus 模型
     local Client_Model_Opus="claude-opus-4-7"
-    local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Flash"
+    local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Pro"
     local API_for_Opus="PRIMARY"
     local REASONING_for_Opus="auto"
 
     # ▸ 槽位 4：Haiku 模型 (子智能体运行槽位)
     local Client_Model_Haiku="claude-haiku-4-5"
     local Upstream_Model_Haiku="deepseek-ai/DeepSeek-V4-Flash"
-    local API_for_Haiku="SECONDARY"
-    local REASONING_for_Haiku="auto"
+    local API_for_Haiku="PRIMARY"
+    local REASONING_for_Haiku="medium"  # 由于 Haiku 模型不支持在 Claude Code 中设置推理深度，建议手动设置
 
     # ┌─────────────────────────────────────────────────────────────┐
     # │ 3. 代理环境初始化                                             │
