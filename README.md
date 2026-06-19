@@ -1,46 +1,47 @@
-# 从零开始部署 Claude Code 完整教程（多模型槽位 + 双通道 + Agent 工具调用版）
+# Deploy Claude Code from Scratch — Full Guide (with Multi-Model Slots + Dual-Channel + Agent Tool Calls)
 
-[简体中文](README.md) | [English](README_EN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-本教程仅依赖系统自带的 **Node.js** 和 **npm**。通过本地一个轻量级的纯 Node.js 脚本将 Claude Code 复杂的 **双向工具链请求、Thinking 推理和 SSE 流** 优雅地翻译给 OpenAI（或任何 OpenAI 兼容接口，如 DeepSeek），实现一键启动、退出自动清理。
+This guide relies only on the system's built-in **Node.js** and **npm**. A lightweight pure Node.js script running locally elegantly translates Claude Code's complex **bidirectional tool-call requests, Thinking inference, and SSE streams** to OpenAI (or any OpenAI-compatible endpoint such as DeepSeek), enabling one-click startup with automatic cleanup on exit.
 
-> 代理脚本的详细技术说明（协议转换规则、SSE 流式状态机、Reasoning 降级机制等）请参阅 [anthropic-proxy脚本说明.md](anthropic-proxy脚本说明.md)。
+> For detailed technical documentation on the proxy script (protocol conversion rules, SSE streaming state machine, Reasoning degradation mechanism, etc.), see [anthropic-proxy-script-documentation.md](anthropic-proxy-script-documentation.md).
 
 ---
 
-## 一、前提检查
-在华为应用市场搜索并安装`DevNode-OH`
+## 1. Prerequisites
 
-在终端运行以下命令，确保环境满足最低要求：
+Install `DevNode-OH` from the Huawei AppGallery.
+
+Run the following commands in the terminal to verify the minimum environment requirements:
 
 ```bash
-node -v   # 需要 >= 18
-npm -v    # 需要 >= 9
+node -v   # requires >= 18
+npm -v    # requires >= 9
 ```
 
 ---
 
-## 二、创建协议转换代理脚本
+## 2. Create the Protocol Conversion Proxy Script
 
-在用户目录下创建 `~/anthropic-proxy.mjs`。该脚本负责在本地 `127.0.0.1:4000` 监听，**双向无缝翻译文本对话、Thinking 推理与 Tool Use 工具调用结构**，并支持 **4 模型槽位动态路由**与 **主备双 API 通道**。
+Create `~/anthropic-proxy.mjs` in your home directory. This script listens on `127.0.0.1:4000` and performs **seamless bidirectional translation of text conversations, Thinking inference, and Tool Use calls**, with **4 model slot dynamic routing** and **primary/backup dual API channels**.
 
 ```bash
 vim ~/anthropic-proxy.mjs
 ```
 
-将项目中的 `anthropic-proxy.mjs` 文件内容完整复制进去（无第三方依赖，开箱即用）。核心能力包括：
+Copy the entire content of `anthropic-proxy.mjs` from this project into the file (zero third-party dependencies, ready to run). Core capabilities include:
 
-- Anthropic Messages ↔ OpenAI Chat Completions 全类型双向翻译
-- SSE 流式双向转换（含 thinking block、text block、tool_use block）
-- 4 槽位模型路由：Default / Sonnet / Opus / Haiku，各槽位可独立配置上游模型与推理深度
-- 主备双 API 通道（PRIMARY / SECONDARY），槽位级别分流
-- Anthropic 协议直连透传模式（当所有 API 均为 Anthropic 格式时自动跳过协议转换）
-- Tool ID 双向标准化（`toolu_oai_xxx` ↔ `call_xxx`）
-- Reasoning 降级重试（`max → high → 移除参数`）
-- 30 秒 SSE keepalive 心跳
-- 请求级超时控制（默认 5 分钟）
+- Full bidirectional translation between Anthropic Messages and OpenAI Chat Completions
+- Bidirectional SSE streaming conversion (thinking block, text block, tool_use block)
+- 4-slot model routing: Default / Sonnet / Opus / Haiku, each independently configurable with upstream model and reasoning depth
+- Primary/backup dual API channels (PRIMARY / SECONDARY), slot-level traffic distribution
+- Anthropic direct pass-through mode (automatically skips protocol conversion when all APIs use Anthropic format)
+- Tool ID bidirectional normalization (`toolu_oai_xxx` ↔ `call_xxx`)
+- Reasoning degradation retry (`max → high → remove parameter`)
+- 30-second SSE keepalive heartbeat
+- Per-request timeout control (default 5 minutes)
 
-给脚本赋予运行权限：
+Make the script executable:
 
 ```bash
 chmod +x ~/anthropic-proxy.mjs
@@ -48,81 +49,95 @@ chmod +x ~/anthropic-proxy.mjs
 
 ---
 
-## 三、配置 Zsh Shell 函数
+## 3. Configure Zsh Shell Function
 
-编辑 `~/.zshrc`：
+Edit `~/.zshrc`:
 
 ```bash
 vim ~/.zshrc
 ```
 
-在文件末尾追加以下代码。请按照实际情况修改 **API 核心配置** 和 **模型槽位配置** 区域：
+Append the following code at the end of the file. Be sure to modify the **API Core Configuration** and **Model Slot Configuration** sections according to your actual setup:
 
 ```bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║               Claude Code 代理网关启动器                       ║
+# ║           Claude Code Proxy Gateway Launcher                 ║
 # ╚══════════════════════════════════════════════════════════════╝
 claude() {
 
     # ┌─────────────────────────────────────────────────────────────┐
-    # │ 1. API 核心配置                                              │
+    # │ 1. API Core Configuration                                   │
     # └─────────────────────────────────────────────────────────────┘
 
-    # ▸ 主 API 配置
-    local PRIMARY_API_FORMAT="openai"                        # 协议格式: "openai" 或 "anthropic"
-    local PRIMARY_AUTH_TYPE="api-key"                        # 授权类型: "api-key" 或 "bearer"
-    local PRIMARY_API_KEY="sk-your-primary-key"              # 授权密钥
-    local PRIMARY_BASE_URL="https://api.openai.com"          # 接入端点
+    # ▸ Primary API Configuration
+    local PRIMARY_API_FORMAT="openai"                        # Protocol format: "openai" or "anthropic"
+    local PRIMARY_AUTH_TYPE="api-key"                        # Auth type: "api-key" or "bearer"
+    local PRIMARY_API_KEY="sk-your-primary-key"              # Auth key
+    local PRIMARY_BASE_URL="https://api.openai.com"          # API endpoint
 
-    # ▸ 备用 API 配置
-    local ENABLE_SECONDARY_API="false"                       # 是否启用备 API 分流
-    local SECONDARY_API_FORMAT="openai"                      # 协议格式: "openai" 或 "anthropic"
-    local SECONDARY_AUTH_TYPE="api-key"                      # 授权类型: "api-key" 或 "bearer"
-    local SECONDARY_API_KEY="sk-your-secondary-key"          # 备用授权密钥
-    local SECONDARY_BASE_URL="https://api.openai.com"        # 备用接入端点
+    # ▸ Backup API Configuration
+    local ENABLE_SECONDARY_API="false"                       # Enable backup API traffic distribution
+    local SECONDARY_API_FORMAT="openai"                      # Protocol format: "openai" or "anthropic"
+    local SECONDARY_AUTH_TYPE="api-key"                      # Auth type: "api-key" or "bearer"
+    local SECONDARY_API_KEY="sk-your-secondary-key"          # Backup auth key
+    local SECONDARY_BASE_URL="https://api.openai.com"        # Backup API endpoint
 
     # ┌─────────────────────────────────────────────────────────────┐
-    # │ 2. 模型槽位配置 (4槽位 × 主备双通道)                            │
+    # │ 2. Model Slot Configuration (4 slots × dual channel)        │
     # └─────────────────────────────────────────────────────────────┘
 
-    # ▸ 槽位 1：默认模型
-    local Client_Model_Default="claude-sonnet-4-6"           # 客户端请求的模型名
-    local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # 上游实际转发的模型名
-    local API_for_Default="PRIMARY"                          # 指向的 API 通道 (PRIMARY/SECONDARY)
-    local REASONING_for_Default="auto"                       # 推理深度 (auto/max/high/medium/low/none)
-                                                             #           └ auto: 根据 budget_tokens 自动映射，无 budget 时默认 medium
+    # ▸ Slot 1: Default Model
+    local Client_Model_Default="claude-sonnet-4-6"           # Client-requested model name
+    local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # Actual upstream model name for forwarding
+    local API_for_Default="PRIMARY"                          # API channel (PRIMARY/SECONDARY)
+    local REASONING_for_Default="auto"                       # Reasoning depth (auto/max/high/medium/low/none)
+                                                             #           └ auto: maps based on budget_tokens, defaults to medium when no budget set
 
-    # ▸ 槽位 2：Sonnet 模型
+    # ▸ Slot 2: Sonnet Model
     local Client_Model_Sonnet="claude-sonnet-4-6"
     local Upstream_Model_Sonnet="deepseek-ai/DeepSeek-V4-Flash"
     local API_for_Sonnet="PRIMARY"
     local REASONING_for_Sonnet="auto"
 
-    # ▸ 槽位 3：Opus 模型
+    # ▸ Slot 3: Opus Model
     local Client_Model_Opus="claude-opus-4-7"
     local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Pro"
     local API_for_Opus="PRIMARY"
     local REASONING_for_Opus="auto"
 
-    # ▸ 槽位 4：Haiku 模型 (子智能体运行槽位)
+    # ▸ Slot 4: Haiku Model (sub-agent slot)
     local Client_Model_Haiku="claude-haiku-4-5"
     local Upstream_Model_Haiku="deepseek-ai/DeepSeek-V4-Flash"
     local API_for_Haiku="PRIMARY"
-    local REASONING_for_Haiku="medium"  # 由于 Haiku 模型不支持在 Claude Code 中设置推理深度，建议手动设置
+    local REASONING_for_Haiku="medium"  # Haiku doesn't support reasoning depth setting in Claude Code, so manual configuration is recommended
 
     # ┌─────────────────────────────────────────────────────────────┐
-    # │ 3. 代理环境初始化                                             │
+    # │ 3. Proxy Environment Initialization                         │
     # └─────────────────────────────────────────────────────────────┘
     local PROXY_PORT=4000
     local PROXY_SCRIPT="$HOME/anthropic-proxy.mjs"
     local PROXY_PID=""
 
-    if [[ ! -f "$PROXY_SCRIPT" ]]; then
-        echo "[Gateway] 代理脚本未找到: $PROXY_SCRIPT"
+    # ── Null-value checks for required configuration ──
+    if [[ -z "$PRIMARY_API_KEY" || "$PRIMARY_API_KEY" == "sk-your-primary-key" ]]; then
+        echo "[Gateway] Error: PRIMARY_API_KEY is not configured. Please set it in ~/.zshrc"
+        return 1
+    fi
+    if [[ -z "$PRIMARY_BASE_URL" ]]; then
+        echo "[Gateway] Error: PRIMARY_BASE_URL is not configured"
+        return 1
+    fi
+    if [[ -z "$Upstream_Model_Default" ]]; then
+        echo "[Gateway] Error: Upstream default model is not configured"
         return 1
     fi
 
-    # ▸ 检测是否可跳过代理直连 (仅当主备皆为 Anthropic 原生协议且配置相同时)
+    if [[ ! -f "$PROXY_SCRIPT" ]]; then
+        echo "[Gateway] Proxy script not found: $PROXY_SCRIPT"
+        return 1
+    fi
+
+    # ▸ Detect pass-through mode (skip proxy when both APIs use native Anthropic protocol with matching configs)
     local CAN_BYPASS_PROXY="false"
     if [[ "$PRIMARY_API_FORMAT" == "anthropic" ]]; then
         if [[ "$ENABLE_SECONDARY_API" != "true" ]]; then
@@ -133,17 +148,17 @@ claude() {
     fi
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 模式 A：Anthropic 直连模式 (跳过协议转换)                        ║
+    # ║ Mode A: Anthropic Direct Pass-Through (skip proxy)          ║
     # ╚══════════════════════════════════════════════════════════════╝
     if [[ "$CAN_BYPASS_PROXY" == "true" ]]; then
-        echo "[Gateway] Anthropic 直连模式，跳过代理..."
+        echo "[Gateway] Anthropic direct mode, skipping proxy..."
         
         export ANTHROPIC_BASE_URL="$PRIMARY_BASE_URL"
         export ANTHROPIC_AUTH_TOKEN="$PRIMARY_API_KEY"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
         export CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK=1
         
-        # ── 设置上游真实模型名 ─
+        # ── Set upstream real model names ─
         export ANTHROPIC_MODEL="$Upstream_Model_Default"
         export ANTHROPIC_DEFAULT_SONNET_MODEL="$Upstream_Model_Sonnet"
         export ANTHROPIC_DEFAULT_OPUS_MODEL="$Upstream_Model_Opus"
@@ -151,12 +166,12 @@ claude() {
         export CLAUDE_CODE_SUBAGENT_MODEL="$Upstream_Model_Haiku"
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 模式 B：代理网关模式 (启动 Node 进行协议转换)                      ║
+    # ║ Mode B: Proxy Gateway Mode (start Node for protocol conv.)  ║
     # ╚══════════════════════════════════════════════════════════════╝
     else
-        echo "[Gateway] 启动协议转换代理..."
+        echo "[Gateway] Starting protocol conversion proxy..."
         
-        # ── 将槽位与 API 配置通过环境变量传递给 Node 代理 ──
+        # ── Pass slot and API configurations to the Node proxy via env vars ──
         CLIENT_MODEL_DEFAULT="$Client_Model_Default" \
         UPSTREAM_MODEL_DEFAULT="$Upstream_Model_Default" \
         MODEL_DEFAULT_API="$API_for_Default" \
@@ -195,14 +210,14 @@ claude() {
         PROXY_PID=$!
         sleep 2.5
 
-        # ── 健康检查 ──
+        # ── Health check ──
         if ! kill -0 "$PROXY_PID" 2>/dev/null; then
-            echo "[Gateway] 启动失败，最近 12 行日志："
+            echo "[Gateway] Failed to start. Last 12 lines of log:"
             tail -12 "$HOME/.anthropic-proxy.log"
             return 1
         fi
 
-        echo "[Gateway] 已启动 (127.0.0.1:${PROXY_PORT})"
+        echo "[Gateway] Started (127.0.0.1:${PROXY_PORT})"
         echo ""
         
         export ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}"
@@ -210,7 +225,7 @@ claude() {
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
         export CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK=1
 
-        # ── 设置客户端声明的模型名 (代理会负责映射到上游真实模型) ──
+        # ── Set client-declared model names (the proxy maps them to upstream) ──
         export ANTHROPIC_MODEL="$Client_Model_Default"
         export ANTHROPIC_DEFAULT_SONNET_MODEL="$Client_Model_Sonnet"
         export ANTHROPIC_DEFAULT_OPUS_MODEL="$Client_Model_Opus"
@@ -219,36 +234,36 @@ claude() {
     fi
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 启动 Claude Code CLI                                          ║
+    # ║ Launch Claude Code CLI                                       ║
     # ╚══════════════════════════════════════════════════════════════╝
-    echo "[Claude Code] 启动中..."
+    echo "[Claude Code] Launching..."
     echo ""
     npx @anthropic-ai/claude-code@2.1.112
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 退出清理：释放环境变量并停止代理进程                               ║
+    # ║ Cleanup: unset env vars and stop proxy process               ║
     # ╚══════════════════════════════════════════════════════════════╝
     unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_SKIP_CONNECTIVITY_CHECK CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK
     unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_EFFORT_LEVEL
     unset ANTHROPIC_AUTH_TOKEN
 
     if [[ -n "$PROXY_PID" ]]; then
-        echo "[Gateway] 停止代理进程 (PID: ${PROXY_PID})...."
+        echo "[Gateway] Stopping proxy process (PID: ${PROXY_PID})..."
         kill "${PROXY_PID}" 2>/dev/null
         wait "${PROXY_PID}" 2>/dev/null
     fi
 
-    echo "[Gateway] 环境已清理！"
+    echo "[Gateway] Environment cleaned up!"
 }
 ```
 
-保存退出。
+Save and exit.
 
 ---
 
-## 四、建立绕过验证伪配置文件
+## 4. Create the Onboarding Bypass Config File
 
-由于首次登入 Claude Code 会连接 Anthropic 并在物理链路层面强行进行国家及地区校验。只需本地伪造已校验状态，即可免受影响：
+On first login, Claude Code connects to Anthropic and performs a hard country/region check at the physical network layer. You can bypass this by creating a local fake verified-state file:
 
 ```bash
 echo '{"hasCompletedOnboarding": true}' > ~/.claude.json
@@ -256,44 +271,45 @@ echo '{"hasCompletedOnboarding": true}' > ~/.claude.json
 
 ---
 
-## 五、启动并测试运行
+## 5. Launch and Test
 
-重新加载 zsh 配置让命令生效（可能需要手动关闭终端再打开）：
+Reload your zsh configuration (you may need to close and reopen the terminal):
 
 ```bash
 source ~/.zshrc
 ```
 
-直接键入 `claude`：
+Type `claude` directly:
 
 ```text
 $ claude
-[Gateway] 启动协议转换代理...
-[Gateway] 已启动 (127.0.0.1:4000)
+[Gateway] Starting protocol conversion proxy...
+[Gateway] Started (127.0.0.1:4000)
 
-[Claude Code] 启动中...
+[Claude Code] Launching...
 
-(Claude Code 启动成功，准备就绪...)
+(Claude Code started successfully, ready...)
 ```
 
-### 功能验证（工具调用测试）：
-进入 Claude Code 对话窗口后，随便问一个它需要读取环境的问题，比如：
-> "请帮我查看一下我当前的工作盘里都有哪些文件？"
+### Tool Call Verification:
+Once inside the Claude Code chat window, ask something that requires reading the environment, for example:
+> "Please check what files are in my current working directory?"
 
-你会惊奇地发现，它会向终端**申请文件系统读取权限**。允许后，它能成功借助我们刚刚双向解析的 **Tool Use** 机制，调用操作系统的底层命令，像官方正版一样提供代码开发、文件编辑和命令行执行能力！
+You'll be surprised to see that it requests **file system read permission**. After allowing it, Claude Code successfully leverages the **Tool Use** mechanism we just bidirectionally parsed to invoke underlying OS commands, providing code development, file editing, and command-line execution capabilities just like the official version!
 
 ---
 
-## 六、卸载
-删除 `~/.zshrc` 中的 `claude` 函数定义，然后删掉代理脚本和 `Claude Code` 相关文件即可：
+## 6. Uninstalling
+
+Remove the `claude` function from `~/.zshrc`, then delete the proxy script and Claude Code-related files:
 
 ```bash
-rm ~/anthropic-proxy.mjs    # 删掉代理脚本
-rm ~/.anthropic-proxy.log   # 删掉代理脚本日志
-rm ~/.claude.json           # 删除Claude Code配置文件
-rm -rf ~/.claude            # 删除Claude Code本地文件
-npx clear-npx-cache         # 回车后将清除所有npx缓存，包含拉取的@anthropic-ai/claude-code@2.1.112
+rm ~/anthropic-proxy.mjs    # Remove proxy script
+rm ~/.anthropic-proxy.log   # Remove proxy log
+rm ~/.claude.json           # Remove Claude Code config
+rm -rf ~/.claude            # Remove Claude Code local files
+npx clear-npx-cache         # Clear all npx cache including @anthropic-ai/claude-code@2.1.112
 ```
 
-## 七、许可证
-本项目采用[MIT 许可证](LICENSE)
+## 7. License
+This project is licensed under the [MIT License](LICENSE).

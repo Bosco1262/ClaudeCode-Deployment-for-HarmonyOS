@@ -1,5 +1,7 @@
 # Anthropic Proxy Script Technical Documentation
 
+[English](anthropic-proxy-script-documentation.md) | [简体中文](anthropic-proxy-script-documentation.zh-CN.md)
+
 This project (`anthropic-proxy.mjs`) is a local **Anthropic Messages API ↔ OpenAI Chat Completions API bidirectional proxy gateway**, designed to make Claude Code compatible with third-party model APIs, supporting dynamic routing, multi-model slots, streaming protocol conversion, and Reasoning adaptation.
 
 ---
@@ -391,19 +393,6 @@ HTTP status code to Anthropic standard error type mapping:
 - `reasoning_effort` depends on upstream support (degradation retry provides fallback)
 - Tool streaming depends on upstream chunk order stability
 - Non-streaming `thinking` blocks do not include signature verification data
-
----
-
-## Directory Structure
-
-```
-anthropic-proxy.mjs              # Core proxy service
-zshrc                            # Zsh startup function
-README.md                        # Deployment guide (Chinese)
-README_EN.md                     # Deployment guide (English)
-anthropic-proxy脚本说明.md        # This documentation (Chinese)
-anthropic-proxy-script-documentation.md  # This documentation (English)
-```
 
 ---
 

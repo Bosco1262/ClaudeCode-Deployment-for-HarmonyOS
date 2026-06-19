@@ -1,7 +1,8 @@
 import http from 'node:http';
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║ 1. 核心配置读取 (主、备 API 密钥与端点)                           ║
+// ║ 1. Core Config Loading (Primary/Backup API Keys & Endpoints) ║
+// ║ 1. 核心配置读取 (主、备 API 密钥与端点)                         ║
 // ╚══════════════════════════════════════════════════════════════╝
 const PRIMARY_FORMAT    = process.env.PRIMARY_API_FORMAT || 'openai';
 const PRIMARY_KEY       = process.env.PRIMARY_API_KEY;
@@ -17,7 +18,8 @@ const SECONDARY_AUTH_TYPE = process.env.SECONDARY_AUTH_TYPE || 'api-key';
 const PROXY_TIMEOUT_MS  = parseInt(process.env.PROXY_TIMEOUT_MS || '300000', 10);
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║ 2. 模型槽位矩阵 (4槽位 × 主备双 API)                             ║
+// ║ 2. Model Slot Matrix (4 Slots × Dual API Channels)          ║
+// ║ 2. 模型槽位矩阵 (4槽位 × 主备双 API)                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 const slots = [
     { 
@@ -49,6 +51,7 @@ const slots = [
 const PORT = process.env.PORT || 4000;
 
 // ╔══════════════════════════════════════════════════════════════╗
+// ║ 3. Utility Functions                                         ║
 // ║ 3. 工具函数                                                   ║
 // ╚══════════════════════════════════════════════════════════════╝
 
@@ -62,6 +65,7 @@ function nextRequestId() {
 }
 
 function sendAnthropicError(res, status, message) {
+    // Map HTTP status code to Anthropic standard error.type
     // 根据状态码映射 Anthropic 标准 error.type
     let errorType = 'api_error';
     if (status === 400) errorType = 'invalid_request_error';
@@ -79,6 +83,7 @@ function sendAnthropicError(res, status, message) {
     }));
 }
 
+// ▸ Detect if upstream rejects due to unsupported reasoning_effort parameter
 // ▸ 检测上游是否因不支持 reasoning_effort 参数而报错
 function isReasoningEffortError(errorText) {
     const lower = errorText.toLowerCase();
@@ -89,13 +94,16 @@ function isReasoningEffortError(errorText) {
            lower.includes('unrecognized');
 }
 
+// ▸ Model routing strategy: exact match → longest fuzzy match → fallback to default slot
 // ▸ 模型路由策略：精确匹配 → 最长模糊匹配 → 兜底默认槽位
 function selectRoute(requestedModel) {
     const modelName = requestedModel.toLowerCase().trim();
 
+    // 1. Exact match against Zsh-declared mapping names
     // 1. 精确匹配 Zsh 声明出来的映射名
     let conf = slots.find(s => s.client === modelName);
 
+    // 2. Fuzzy adaptive recognition, prioritize longest (most precise) match
     // 2. 模糊自适应识别，优先最长 (最精确) 匹配
     if (!conf) {
         const candidates = slots.filter(s => modelName.includes(s.client) || s.client.includes(modelName));
@@ -105,6 +113,7 @@ function selectRoute(requestedModel) {
         }
     }
 
+    // 3. Fallback to slot 1
     // 3. 兜底匹配槽位 1
     if (!conf) {
         conf = slots[0];
@@ -122,6 +131,7 @@ function selectRoute(requestedModel) {
     };
 }
 
+// ▸ Tool ID normalization (bidirectional Anthropic ↔ OpenAI format conversion)
 // ▸ Tool ID 标准化转换 (Anthropic 与 OpenAI 格式互转)
 function normalizeToolId(id) {
     if (!id) return id;
@@ -136,12 +146,15 @@ function denormalizeToolId(id) {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║ 4. 请求协议转换：Anthropic Messages → OpenAI Chat Completions  ║
+// ║ 4. Request Protocol Conversion:                             ║
+// ║    Anthropic Messages → OpenAI Chat Completions             ║
+// ║ 4. 请求协议转换：Anthropic Messages → OpenAI Chat Completions ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 function anthropicToOpenAI(anthBody, route) {
     const messages = [];
 
+    // ▸ Process System Prompt
     // ▸ 处理 System Prompt
     if (anthBody.system) {
         let systemText;
@@ -158,6 +171,7 @@ function anthropicToOpenAI(anthBody, route) {
         }
     }
 
+    // ▸ Iterate and process message body
     // ▸ 遍历处理消息体
     for (const msg of anthBody.messages || []) {
         const { role, content } = msg;
@@ -203,6 +217,7 @@ function anthropicToOpenAI(anthBody, route) {
                 }
             }
 
+            // ▸ Assemble OpenAI message structure based on role
             // ▸ 根据 Role 组装 OpenAI 消息结构
             if (role === 'user') {
                 if (toolResults.length > 0) {
@@ -222,6 +237,7 @@ function anthropicToOpenAI(anthBody, route) {
         }
     }
 
+    // ▸ Build base request body
     // ▸ 构建基础请求体
     const oaiBody = {
         model: route.targetModel,
@@ -231,6 +247,7 @@ function anthropicToOpenAI(anthBody, route) {
         stream: !!anthBody.stream,
     };
 
+    // ▸ Translate tool definitions: Anthropic tools → OpenAI functions
     // ▸ 翻译工具定义：Anthropic tools → OpenAI functions
     if (anthBody.tools && anthBody.tools.length > 0) {
         oaiBody.tools = anthBody.tools.map(tool => ({
@@ -246,6 +263,7 @@ function anthropicToOpenAI(anthBody, route) {
         }
     }
 
+    // ▸ Reasoning depth mapping: budget_tokens → reasoning_effort
     // ▸ 推理深度映射：budget_tokens → reasoning_effort
     if (route.reasoning !== 'none') {
         let targetEffort = route.reasoning;
@@ -258,17 +276,20 @@ function anthropicToOpenAI(anthBody, route) {
                 else if (budget >= 1024) targetEffort = 'medium';
                 else targetEffort = 'low';
             } else if (anthBody.thinking && anthBody.thinking.type === 'adaptive') {
-                // adaptive 模式：由模型自动决定推理深度，映射为 OpenAI 的中等偏高水平
+                // adaptive mode: model decides reasoning depth, maps to OpenAI high level
+                // adaptive 模式：由模型自动决定推理深度，映射为 OpenAI 的高深度
                 targetEffort = 'high';
             } else {
                 targetEffort = 'medium';
             }
         }
         
+        // Always send reasoning_effort; if upstream doesn't support it, auto-degrade via error handler
         // 始终发送 reasoning_effort，若上游不支持则由错误处理模块自动降级重试
         oaiBody.reasoning_effort = targetEffort;
     }
 
+    // ▸ Map Anthropic metadata.user_id → OpenAI user (for tracking)
     // ▸ 映射 Anthropic metadata.user_id → OpenAI user (用于追踪)
     if (anthBody.metadata?.user_id) {
         oaiBody.user = anthBody.metadata.user_id;
@@ -279,7 +300,8 @@ function anthropicToOpenAI(anthBody, route) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║ 5. HTTP 服务核心逻辑                                           ║
+// ║ 5. HTTP Server Core Logic                                    ║
+// ║ 5. HTTP 服务核心逻辑                                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 const server = http.createServer(async (req, res) => {
     const pathname = req.url.split('?')[0];
@@ -287,6 +309,7 @@ const server = http.createServer(async (req, res) => {
     const requestStart = Date.now();
     log(`[${requestId}] --> ${req.method} ${pathname}`);
 
+    // ▸ Health check endpoint
     // ▸ 心跳检测端点
     if (req.method === 'HEAD' && pathname === '/') {
         res.writeHead(200);
@@ -294,6 +317,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ▸ Model list endpoint: dynamically return slot-configured models
     // ▸ 模型列表端点：动态返回槽位支持的模型
     if (req.method === 'GET' && pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -303,9 +327,11 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ▸ Core chat endpoint
     // ▸ 核心对话端点
     if (req.method === 'POST' && pathname === '/v1/messages') {
         try {
+            // ── Read and parse request body ──
             // ── 读取并解析请求体 ──
             let body = '';
             req.on('data', chunk => { body += chunk; });
@@ -322,6 +348,7 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
+            // ── Routing decision ──
             // ── 路由决策 ──
             const clientRequestedModel = anthBody.model || slots[0].client;
             const route = selectRoute(clientRequestedModel);
@@ -329,6 +356,7 @@ const server = http.createServer(async (req, res) => {
             log(`[${requestId}] Route: ${route.name} API (${route.format}) | client=${clientRequestedModel} → upstream=${route.targetModel} | stream=${!!anthBody.stream} | thinking=${anthBody.thinking ? anthBody.thinking.type : 'disabled'}`);
 
             // ══════════════════════════════════════════════════════════════
+            // Mode A: Anthropic Protocol Direct Pass-Through
             // 模式 A：Anthropic 协议直连透传
             // ══════════════════════════════════════════════════════════════
             if (route.format === 'anthropic') {
@@ -337,10 +365,12 @@ const server = http.createServer(async (req, res) => {
                     'anthropic-version': req.headers['anthropic-version'] || '2023-06-01'
                 };
 
+                // Select Bearer or x-api-key based on auth type
                 // 根据认证类型选择 Bearer 或 x-api-key
                 if (route.key) {
                     if (route.authType === 'bearer') {
                         headers['Authorization'] = `Bearer ${route.key}`;
+                        // OAuth Bearer auth requires accompanying beta flag
                         // OAuth Bearer 认证需附带配套 beta 标志
                         if (!headers['anthropic-beta']) {
                             headers['anthropic-beta'] = 'oauth-2025-04-20';
@@ -374,6 +404,7 @@ const server = http.createServer(async (req, res) => {
 
                     if (!response.ok) {
                         const errText = await response.text();
+                        // Try to parse upstream standard error format and forward as-is to avoid nesting
                         // 尝试解析上游标准错误格式并原样转发，避免二次嵌套
                         try {
                             const errJson = JSON.parse(errText);
@@ -382,19 +413,23 @@ const server = http.createServer(async (req, res) => {
                                 res.end(JSON.stringify(errJson));
                                 return;
                             }
-                        } catch (_) { /* 非JSON，走通用错误处理 */ }
+                        } catch (_) { /* Not JSON, fall through to generic error handling */
+                                       /* 非JSON，走通用错误处理 */ }
                         sendAnthropicError(res, response.status, `直连平台处理错: ${errText}`);
                         return;
                     }
 
+                    // Streaming response pass-through
                     // 流式响应透传
                     if (anthBody.stream) {
                         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
                         if (response.body) {
                             const reader = response.body.getReader();
+                            // Send SSE heartbeat every 30s to prevent client 45s liveness timeout
                             // 按 30 秒间隔发送 SSE 心跳，防止客户端 45 秒活性超时
                             let keepaliveTimer = setInterval(() => {
-                                try { res.write(':keepalive\n\n'); } catch (_) { /* 连接已断 */ }
+                                try { res.write(':keepalive\n\n'); } catch (_) { /* Connection already closed */
+                                                                              /* 连接已断 */ }
                             }, 30000);
                             try {
                                 while (true) {
@@ -408,6 +443,7 @@ const server = http.createServer(async (req, res) => {
                         }
                         res.end();
                     } 
+                    // Non-streaming response pass-through
                     // 非流式响应透传
                     else {
                         const data = await response.json();
@@ -423,6 +459,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             // ══════════════════════════════════════════════════════════════
+            // Mode B: OpenAI Protocol Bidirectional Conversion
             // 模式 B：OpenAI 协议双向转换
             // ══════════════════════════════════════════════════════════════
             const oaiBody = anthropicToOpenAI(anthBody, route);
@@ -449,6 +486,7 @@ const server = http.createServer(async (req, res) => {
 
             log(`[${requestId}] <-- OpenAI HTTP ${response.status} | ${Date.now() - requestStart}ms`);
 
+            // ── Error handling with auto-degradation retry ──
             // ── 错误处理与自动降级重试 ──
             if (!response.ok) {
                 const errorText = await response.text();
@@ -483,6 +521,7 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
+            // ── Streaming response conversion (OpenAI SSE → Anthropic SSE) ──
             // ── 流式响应转换 (OpenAI SSE → Anthropic SSE) ──
             if (anthBody.stream) {
                 res.writeHead(200, {
@@ -499,6 +538,7 @@ const server = http.createServer(async (req, res) => {
                 let cacheReadTokens = 0;
                 let finalFinishReason = 'end_turn';
                 
+                // Block state management
                 // 块状态管理
                 let thinkingBlockOpened = false;
                 let textBlockOpened = false;
@@ -542,6 +582,7 @@ const server = http.createServer(async (req, res) => {
                     }
                 };
 
+                // Send start signal
                 // 发送起始信号
                 res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: messageId, type: "message", role: "assistant", content: [], model: clientRequestedModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } })}\n\n`);
 
@@ -584,12 +625,14 @@ const server = http.createServer(async (req, res) => {
                                 }
                                 if (finishReason) finalFinishReason = finishReason;
 
+                                // ▸ reasoning_content → thinking block (e.g., DeepSeek R1)
                                 // ▸ reasoning_content → thinking 块 (如 DeepSeek R1)
                                 if (delta?.reasoning_content) {
                                     ensureThinkingBlockStart();
                                     res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: thinkingBlockIdx, delta: { type: "thinking_delta", thinking: delta.reasoning_content } })}\n\n`);
                                 }
 
+                                // ▸ text content → text block
                                 // ▸ text content → text 块
                                 if (delta?.content) {
                                     if (thinkingBlockOpened) {
@@ -601,6 +644,7 @@ const server = http.createServer(async (req, res) => {
                                     res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: textBlockIdx, delta: { type: "text_delta", text: delta.content } })}\n\n`);
                                 }
 
+                                // ▸ tool_calls processing (close thinking block first to prevent interleaving)
                                 // ▸ tool_calls 处理 (需前先关闭 thinking 块防止交叉)
                                 if (delta?.tool_calls) {
                                     if (thinkingBlockOpened) {
@@ -623,6 +667,7 @@ const server = http.createServer(async (req, res) => {
                                         if (t.function?.name) state.name = t.function.name;
                                         if (t.function?.arguments) state.buffer += t.function.arguments;
 
+                                        // When id + name are ready, open content_block_start and replay buffer
                                         // 当 id + name 就绪时，打开 content_block_start 并回放缓冲区
                                         if (!state.opened && state.id && state.name) {
                                             state.opened = true;
@@ -635,6 +680,7 @@ const server = http.createServer(async (req, res) => {
                                             }
                                         }
 
+                                        // Continuously send parameter fragments
                                         // 持续发送参数片段
                                         if (state.opened && t.function?.arguments) {
                                             res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: state.index, delta: { type: "input_json_delta", partial_json: t.function.arguments } })}\n\n`);
@@ -647,6 +693,7 @@ const server = http.createServer(async (req, res) => {
                         }
                     }
 
+                    // ── Stream ended, close all open blocks ──
                     // ── 流结束，关闭所有打开的块 ──
                     closeAllBlocks();
                     const stopReasonMap = { 'stop': 'end_turn', 'length': 'max_tokens', 'tool_calls': 'tool_use', 'content_filter': 'end_turn', 'function_call': 'tool_use' };
@@ -662,11 +709,13 @@ const server = http.createServer(async (req, res) => {
                     try {
                         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: outputTokens || 0, input_tokens: inputTokens || 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } })}\n\n`);
                         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
-                    } catch (_) { /* 连接可能已断开 */ }
+                    } catch (_) { /* Connection may already be closed */
+                                  /* 连接可能已断开 */ }
                     res.end();
                 }
             } 
             
+            // ── Non-streaming response conversion ──
             // ── 非流式响应转换 ──
             else {
                 const oaiData = await response.json();
@@ -679,15 +728,18 @@ const server = http.createServer(async (req, res) => {
 
                 const resContent = [];
 
+                // ▸ Extract reasoning/thinking content
                 // ▸ 提取推理/思考内容
                 if (choice.message?.reasoning_content) {
                     resContent.push({ type: 'thinking', thinking: choice.message.reasoning_content, signature: '' });
                 }
+                // ▸ Extract normal text
                 // ▸ 提取正常文本
                 if (choice.message?.content) {
                     const text = choice.message.content.trim();
                     if (text) resContent.push({ type: 'text', text });
                 }
+                // ▸ Extract tool calls
                 // ▸ 提取工具调用
                 if (choice.message?.tool_calls) {
                     for (const t of choice.message.tool_calls) {
@@ -723,6 +775,7 @@ const server = http.createServer(async (req, res) => {
         }
     } 
     
+    // ▸ 404 fallback route
     // ▸ 404 兜底路由
     else {
         log(`[${requestId}] 404 ${req.method} ${req.url}`);
@@ -731,7 +784,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║ 6. 进程管理与启动                                              ║
+// ║ 6. Process Management & Startup                              ║
+// ║ 6. 进程管理与启动                                             ║
 // ╚══════════════════════════════════════════════════════════════╝
 const gracefulShutdown = () => server.close(() => process.exit(0));
 process.on('SIGTERM', gracefulShutdown);

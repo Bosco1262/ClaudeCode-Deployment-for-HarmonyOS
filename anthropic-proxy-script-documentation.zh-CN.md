@@ -1,5 +1,7 @@
 # Anthropic Proxy 脚本技术说明
 
+[English](anthropic-proxy-script-documentation.md) | [简体中文](anthropic-proxy-script-documentation.zh-CN.md)
+
 本项目 (`anthropic-proxy.mjs`) 是一个本地 **Anthropic Messages API ↔ OpenAI Chat Completions API 双向代理网关**，用于让 Claude Code 兼容第三方模型 API，并支持动态路由、多模型槽位、流式协议转换与 Reasoning 适配。
 
 ---
@@ -391,17 +393,6 @@ HTTP 状态码到 Anthropic 标准 error type 的映射：
 * `reasoning_effort` 依赖上游支持（有降级重试兜底）
 * Tool streaming 依赖上游 chunk 顺序稳定性
 * 非流式响应的 `thinking` 块不含 signature 验证数据
-
----
-
-## 目录结构
-
-```
-anthropic-proxy.mjs   # 核心代理服务
-zshrc                 # Zsh 启动函数
-README.md             # 部署教程
-anthropic-proxy脚本说明.md  # 本说明文件
-```
 
 ---
 
