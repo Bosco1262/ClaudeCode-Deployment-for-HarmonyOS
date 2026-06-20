@@ -112,7 +112,31 @@ claude() {
     local REASONING_for_Haiku="medium"  # Haiku doesn't support reasoning depth setting in Claude Code, so manual configuration is recommended
 
     # ┌─────────────────────────────────────────────────────────────┐
-    # │ 3. Proxy Environment Initialization                         │
+    # │ 3. Pre-Start Initialization                                 │
+    # └─────────────────────────────────────────────────────────────┘
+
+    # ── Clean up residual environment variables from the previous run ──
+    unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+    unset ANTHROPIC_SKIP_CONNECTIVITY_CHECK CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK
+    unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+    unset CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_EFFORT_LEVEL
+
+    # ── Kill residual proxy via PID file (verify port 4000 is occupied first to avoid false kills after reboot) ──
+    local PID_FILE="$HOME/.anthropic-proxy.pid"
+    if [[ -f "$PID_FILE" ]]; then
+        if node -e "
+        require('net').connect(4000,'127.0.0.1',()=>process.exit(0))
+        .on('error',()=>process.exit(1))
+        .setTimeout(1000,()=>process.exit(1));
+        " 2>/dev/null; then
+            kill "$(cat "$PID_FILE")" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
+    sleep 0.3
+
+    # ┌─────────────────────────────────────────────────────────────┐
+    # │ 4. Proxy Environment Initialization                         │
     # └─────────────────────────────────────────────────────────────┘
     local PROXY_PORT=4000
     local PROXY_SCRIPT="$HOME/anthropic-proxy.mjs"
@@ -148,7 +172,7 @@ claude() {
     fi
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ Mode A: Anthropic Direct Pass-Through (skip proxy)          ║
+    # ║ Mode A: Anthropic Direct Pass-Through (skip proxy)           ║
     # ╚══════════════════════════════════════════════════════════════╝
     if [[ "$CAN_BYPASS_PROXY" == "true" ]]; then
         echo "[Gateway] Anthropic direct mode, skipping proxy..."
@@ -166,7 +190,7 @@ claude() {
         export CLAUDE_CODE_SUBAGENT_MODEL="$Upstream_Model_Haiku"
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ Mode B: Proxy Gateway Mode (start Node for protocol conv.)  ║
+    # ║ Mode B: Proxy Gateway Mode (start Node for protocol conv.)   ║
     # ╚══════════════════════════════════════════════════════════════╝
     else
         echo "[Gateway] Starting protocol conversion proxy..."
@@ -208,6 +232,7 @@ claude() {
         nohup node "$PROXY_SCRIPT" > $HOME/.anthropic-proxy.log 2>&1 &
         
         PROXY_PID=$!
+        echo "$PROXY_PID" > "$HOME/.anthropic-proxy.pid"
         sleep 2.5
 
         # ── Health check ──
@@ -252,6 +277,7 @@ claude() {
         kill "${PROXY_PID}" 2>/dev/null
         wait "${PROXY_PID}" 2>/dev/null
     fi
+    rm -f "$HOME/.anthropic-proxy.pid"
 
     echo "[Gateway] Environment cleaned up!"
 }
@@ -306,6 +332,7 @@ Remove the `claude` function from `~/.zshrc`, then delete the proxy script and C
 ```bash
 rm ~/anthropic-proxy.mjs    # Remove proxy script
 rm ~/.anthropic-proxy.log   # Remove proxy log
+rm ~/.anthropic-proxy.pid   # Remove proxy PID file
 rm ~/.claude.json           # Remove Claude Code config
 rm -rf ~/.claude            # Remove Claude Code local files
 npx clear-npx-cache         # Clear all npx cache including @anthropic-ai/claude-code@2.1.112

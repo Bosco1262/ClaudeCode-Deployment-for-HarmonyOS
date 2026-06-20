@@ -60,7 +60,7 @@ vim ~/.zshrc
 
 ```bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║               Claude Code 代理网关启动器                       ║
+# ║               Claude Code 代理网关启动器                      ║
 # ╚══════════════════════════════════════════════════════════════╝
 claude() {
 
@@ -82,7 +82,7 @@ claude() {
     local SECONDARY_BASE_URL="https://api.openai.com"        # 备用接入端点
 
     # ┌─────────────────────────────────────────────────────────────┐
-    # │ 2. 模型槽位配置 (4槽位 × 主备双通道)                            │
+    # │ 2. 模型槽位配置 (4槽位 × 主备双通道)                          │
     # └─────────────────────────────────────────────────────────────┘
 
     # ▸ 槽位 1：默认模型
@@ -111,7 +111,32 @@ claude() {
     local REASONING_for_Haiku="medium"  # 由于 Haiku 模型不支持在 Claude Code 中设置推理深度，建议手动设置
 
     # ┌─────────────────────────────────────────────────────────────┐
-    # │ 3. 代理环境初始化                                             │
+    # │ 3. 启动前初始化：清除残留的环境变量和代理进程                  │
+    # └─────────────────────────────────────────────────────────────┘
+
+    # ── 清除上一轮残留的环境变量 ──
+    unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+    unset ANTHROPIC_SKIP_CONNECTIVITY_CHECK CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK
+    unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+    unset CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_EFFORT_LEVEL
+
+    # ── 通过 PID 文件杀掉上一轮残留的代理进程 ──
+    # 先验证端口 4000 有进程监听（避免重启后 PID 被回收导致误杀）
+    local PID_FILE="$HOME/.anthropic-proxy.pid"
+    if [[ -f "$PID_FILE" ]]; then
+        if node -e "
+        require('net').connect(4000,'127.0.0.1',()=>process.exit(0))
+        .on('error',()=>process.exit(1))
+        .setTimeout(1000,()=>process.exit(1));
+        " 2>/dev/null; then
+            kill "$(cat "$PID_FILE")" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
+    sleep 0.3
+
+    # ┌─────────────────────────────────────────────────────────────┐
+    # │ 4. 代理环境初始化                                            │
     # └─────────────────────────────────────────────────────────────┘
     local PROXY_PORT=4000
     local PROXY_SCRIPT="$HOME/anthropic-proxy.mjs"
@@ -147,7 +172,7 @@ claude() {
     fi
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 模式 A：Anthropic 直连模式 (跳过协议转换)                        ║
+    # ║ 模式 A：Anthropic 直连模式 (跳过协议转换)                      ║
     # ╚══════════════════════════════════════════════════════════════╝
     if [[ "$CAN_BYPASS_PROXY" == "true" ]]; then
         echo "[Gateway] Anthropic 直连模式，跳过代理..."
@@ -165,7 +190,7 @@ claude() {
         export CLAUDE_CODE_SUBAGENT_MODEL="$Upstream_Model_Haiku"
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 模式 B：代理网关模式 (启动 Node 进行协议转换)                      ║
+    # ║ 模式 B：代理网关模式 (启动 Node 进行协议转换)                  ║
     # ╚══════════════════════════════════════════════════════════════╝
     else
         echo "[Gateway] 启动协议转换代理..."
@@ -207,6 +232,7 @@ claude() {
         nohup node "$PROXY_SCRIPT" > $HOME/.anthropic-proxy.log 2>&1 &
         
         PROXY_PID=$!
+        echo "$PROXY_PID" > "$HOME/.anthropic-proxy.pid"
         sleep 2.5
 
         # ── 健康检查 ──
@@ -233,14 +259,14 @@ claude() {
     fi
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 启动 Claude Code CLI                                          ║
+    # ║ 启动 Claude Code CLI                                         ║
     # ╚══════════════════════════════════════════════════════════════╝
     echo "[Claude Code] 启动中..."
     echo ""
     npx @anthropic-ai/claude-code@2.1.112
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║ 退出清理：释放环境变量并停止代理进程                               ║
+    # ║ 退出清理：释放环境变量并停止代理进程                           ║
     # ╚══════════════════════════════════════════════════════════════╝
     unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_SKIP_CONNECTIVITY_CHECK CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK
     unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_EFFORT_LEVEL
@@ -251,6 +277,7 @@ claude() {
         kill "${PROXY_PID}" 2>/dev/null
         wait "${PROXY_PID}" 2>/dev/null
     fi
+    rm -f "$HOME/.anthropic-proxy.pid"
 
     echo "[Gateway] 环境已清理！"
 }
@@ -304,6 +331,7 @@ $ claude
 ```bash
 rm ~/anthropic-proxy.mjs    # 删掉代理脚本
 rm ~/.anthropic-proxy.log   # 删掉代理脚本日志
+rm ~/.anthropic-proxy.pid   # 删掉代理进程 PID 文件
 rm ~/.claude.json           # 删除Claude Code配置文件
 rm -rf ~/.claude            # 删除Claude Code本地文件
 npx clear-npx-cache         # 回车后将清除所有npx缓存，包含拉取的@anthropic-ai/claude-code@2.1.112
