@@ -282,12 +282,9 @@ max → high (retry once)
 high → remove reasoning_effort parameter (retry once)
 ```
 
-Trigger conditions (error message contains any of the following keywords):
+Trigger conditions (error message must mention the parameter itself):
 - `reasoning_effort`
-- `unsupported parameter`
-- `unknown parameter`
-- `invalid parameter`
-- `unrecognized`
+- `reasoning effort`
 
 ---
 

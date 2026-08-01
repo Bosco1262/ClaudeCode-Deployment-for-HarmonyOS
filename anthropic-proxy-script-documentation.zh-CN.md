@@ -282,12 +282,9 @@ max → high（重试一次）
 high → 移除 reasoning_effort 参数（重试一次）
 ```
 
-触发条件（错误信息包含以下关键词）：
+触发条件（错误信息必须提到该参数本身）：
 * `reasoning_effort`
-* `unsupported parameter`
-* `unknown parameter`
-* `invalid parameter`
-* `unrecognized`
+* `reasoning effort`
 
 ---
 

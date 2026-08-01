@@ -87,7 +87,7 @@ claude() {
     # └─────────────────────────────────────────────────────────────┘
 
     # ▸ Slot 1: Default Model
-    local Client_Model_Default="claude-sonnet-4-6"           # Client-requested model name
+    local Client_Model_Default="claude-sonnet-5"             # Client-requested model name
     local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # Actual upstream model name for forwarding
     local API_for_Default="PRIMARY"                          # API channel (PRIMARY/SECONDARY)
     local REASONING_for_Default="auto"                       # Reasoning depth (auto/max/high/medium/low/none)
@@ -100,7 +100,7 @@ claude() {
     local REASONING_for_Sonnet="auto"
 
     # ▸ Slot 3: Opus Model
-    local Client_Model_Opus="claude-opus-4-7"
+    local Client_Model_Opus="claude-opus-5"
     local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Pro"
     local API_for_Opus="PRIMARY"
     local REASONING_for_Opus="auto"
@@ -176,12 +176,12 @@ claude() {
     # ╚══════════════════════════════════════════════════════════════╝
     if [[ "$CAN_BYPASS_PROXY" == "true" ]]; then
         echo "[Gateway] Anthropic direct mode, skipping proxy..."
-        
+
         export ANTHROPIC_BASE_URL="$PRIMARY_BASE_URL"
         export ANTHROPIC_AUTH_TOKEN="$PRIMARY_API_KEY"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
         export CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK=1
-        
+
         # ── Set upstream real model names ─
         export ANTHROPIC_MODEL="$Upstream_Model_Default"
         export ANTHROPIC_DEFAULT_SONNET_MODEL="$Upstream_Model_Sonnet"
@@ -194,7 +194,7 @@ claude() {
     # ╚══════════════════════════════════════════════════════════════╝
     else
         echo "[Gateway] Starting protocol conversion proxy..."
-        
+
         # ── Pass slot and API configurations to the Node proxy via env vars ──
         CLIENT_MODEL_DEFAULT="$Client_Model_Default" \
         UPSTREAM_MODEL_DEFAULT="$Upstream_Model_Default" \
@@ -230,7 +230,7 @@ claude() {
         PROXY_TIMEOUT_MS="${PROXY_TIMEOUT_MS:-300000}" \
         PORT="$PROXY_PORT" \
         nohup node "$PROXY_SCRIPT" > $HOME/.anthropic-proxy.log 2>&1 &
-        
+
         PROXY_PID=$!
         echo "$PROXY_PID" > "$HOME/.anthropic-proxy.pid"
         sleep 2.5
@@ -244,7 +244,7 @@ claude() {
 
         echo "[Gateway] Started (127.0.0.1:${PROXY_PORT})"
         echo ""
-        
+
         export ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}"
         export ANTHROPIC_API_KEY="sk-ant-mock-key-to-local-proxy"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
@@ -318,7 +318,9 @@ $ claude
 ```
 
 ### Tool Call Verification:
+
 Once inside the Claude Code chat window, ask something that requires reading the environment, for example:
+
 > "Please check what files are in my current working directory?"
 
 You'll be surprised to see that it requests **file system read permission**. After allowing it, Claude Code successfully leverages the **Tool Use** mechanism we just bidirectionally parsed to invoke underlying OS commands, providing code development, file editing, and command-line execution capabilities just like the official version!
@@ -339,4 +341,5 @@ npx clear-npx-cache         # Clear all npx cache including @anthropic-ai/claude
 ```
 
 ## 7. License
+
 This project is licensed under the [MIT License](LICENSE).

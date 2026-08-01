@@ -65,6 +65,10 @@ function nextRequestId() {
 }
 
 function sendAnthropicError(res, status, message) {
+    // Guard against double writeHead (e.g. streaming already started, then error)
+    // 防止二次写入响应头（如流式已开始后再报错）
+    if (res.headersSent) return;
+
     // Map HTTP status code to Anthropic standard error.type
     // 根据状态码映射 Anthropic 标准 error.type
     let errorType = 'api_error';
@@ -87,11 +91,12 @@ function sendAnthropicError(res, status, message) {
 // ▸ 检测上游是否因不支持 reasoning_effort 参数而报错
 function isReasoningEffortError(errorText) {
     const lower = errorText.toLowerCase();
-    return lower.includes('reasoning_effort') || 
-           lower.includes('unsupported parameter') || 
-           lower.includes('unknown parameter') || 
-           lower.includes('invalid parameter') || 
-           lower.includes('unrecognized');
+    // Only trigger when the error actually mentions the reasoning_effort parameter,
+    // avoiding false matches on generic errors (e.g. invalid parameter: model)
+    // 仅当错误确实提到 reasoning_effort 参数时才触发，
+    // 避免误匹配通用错误（如 invalid parameter: model）
+    return lower.includes('reasoning_effort') ||
+           lower.includes('reasoning effort');
 }
 
 // ▸ Model routing strategy: exact match → longest fuzzy match → fallback to default slot
@@ -222,6 +227,14 @@ function anthropicToOpenAI(anthBody, route) {
             if (role === 'user') {
                 if (toolResults.length > 0) {
                     messages.push(...toolResults);
+                    // Preserve accompanying text/images instead of silently dropping them
+                    // 保留工具结果之外附带的文本/图片，避免静默丢失
+                    const extraContent = [];
+                    if (textContent) extraContent.push({ type: 'text', text: textContent });
+                    if (images.length > 0) extraContent.push(...images);
+                    if (extraContent.length > 0) {
+                        messages.push({ role: 'user', content: extraContent });
+                    }
                 } else if (images.length > 0) {
                     messages.push({ role: 'user', content: [{ type: 'text', text: textContent || ' ' }, ...images] });
                 } else {
@@ -367,23 +380,23 @@ const server = http.createServer(async (req, res) => {
 
                 // Select Bearer or x-api-key based on auth type
                 // 根据认证类型选择 Bearer 或 x-api-key
+                if (req.headers['anthropic-beta']) {
+                    headers['anthropic-beta'] = req.headers['anthropic-beta'];
+                }
+
                 if (route.key) {
                     if (route.authType === 'bearer') {
                         headers['Authorization'] = `Bearer ${route.key}`;
-                        // OAuth Bearer auth requires accompanying beta flag
-                        // OAuth Bearer 认证需附带配套 beta 标志
+                        // OAuth Bearer auth requires the oauth beta flag; merge with client flags instead of overwriting
+                        // OAuth Bearer 认证需附带 oauth beta 标志；与客户端标志拼接而非覆盖
                         if (!headers['anthropic-beta']) {
                             headers['anthropic-beta'] = 'oauth-2025-04-20';
-                        } else {
+                        } else if (!headers['anthropic-beta'].includes('oauth-2025-04-20')) {
                             headers['anthropic-beta'] += ',oauth-2025-04-20';
                         }
                     } else {
                         headers['x-api-key'] = route.key;
                     }
-                }
-
-                if (req.headers['anthropic-beta']) {
-                    headers['anthropic-beta'] = req.headers['anthropic-beta'];
                 }
 
                 if (req.headers['x-client-request-id']) {
@@ -492,25 +505,51 @@ const server = http.createServer(async (req, res) => {
                 const errorText = await response.text();
 
                 if (oaiBody.reasoning_effort && isReasoningEffortError(errorText)) {
-                    const prev = oaiBody.reasoning_effort;
-                    if (prev === 'max') {
-                        log(`[${requestId}] Retry reasoning_effort: max → high`);
-                        oaiBody.reasoning_effort = 'high';
-                    } else {
-                        log(`[${requestId}] Retry reasoning_effort rejected, removing`);
-                        delete oaiBody.reasoning_effort;
+                    // Degradation ladder: max → high → remove parameter, each step retried once
+                    // 降级阶梯：max → high → 去掉参数，每步各重试一次
+                    const ladder = oaiBody.reasoning_effort === 'max' ? ['high', null] : [null];
+                    let retryRes = null;
+                    let retryErrText = '';
+
+                    for (const nextEffort of ladder) {
+                        if (nextEffort === null) {
+                            log(`[${requestId}] Retry reasoning_effort rejected, removing`);
+                            delete oaiBody.reasoning_effort;
+                        } else {
+                            log(`[${requestId}] Retry reasoning_effort: max → high`);
+                            oaiBody.reasoning_effort = nextEffort;
+                        }
+
+                        // Each retry gets its own timeout protection
+                        // 每次重试均配备独立的超时保护
+                        const retryController = new AbortController();
+                        const retryTimeoutId = setTimeout(() => retryController.abort(), PROXY_TIMEOUT_MS);
+                        try {
+                            retryRes = await fetch(`${route.base}/v1/chat/completions`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${route.key}` },
+                                body: JSON.stringify(oaiBody),
+                                signal: retryController.signal
+                            });
+                        } catch (fetchErr) {
+                            log(`[${requestId}] OpenAI Retry Connection failed: ${fetchErr.message}`);
+                            sendAnthropicError(res, 502, `中转网络失联: ${route.base}`);
+                            return;
+                        } finally {
+                            clearTimeout(retryTimeoutId);
+                        }
+
+                        if (retryRes.ok) break;
+
+                        retryErrText = await retryRes.text();
+                        if (!isReasoningEffortError(retryErrText)) {
+                            sendAnthropicError(res, retryRes.status, `上游服务器拒绝处理: ${retryErrText}`);
+                            return;
+                        }
                     }
 
-                    const retryRes = await fetch(`${route.base}/v1/chat/completions`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${route.key}` },
-                        body: JSON.stringify(oaiBody),
-                        signal: controller.signal
-                    });
-
                     if (!retryRes.ok) {
-                        const err2 = await retryRes.text();
-                        sendAnthropicError(res, retryRes.status, `上游服务器拒绝处理: ${err2}`);
+                        sendAnthropicError(res, retryRes.status, `上游服务器拒绝处理: ${retryErrText}`);
                         return;
                     }
                     response = retryRes;
@@ -524,6 +563,15 @@ const server = http.createServer(async (req, res) => {
             // ── Streaming response conversion (OpenAI SSE → Anthropic SSE) ──
             // ── 流式响应转换 (OpenAI SSE → Anthropic SSE) ──
             if (anthBody.stream) {
+                // Check the stream is usable BEFORE writing the 200 header, so a broken
+                // body can still be reported with a proper error response
+                // 在写入 200 响应头之前先检查流是否可用，保证 body 为空时还能正常返回错误
+                const reader = response.body?.getReader();
+                if (!reader) {
+                    sendAnthropicError(res, 500, "Response stream was broken");
+                    return;
+                }
+
                 res.writeHead(200, {
                     'Content-Type': 'text/event-stream',
                     'Cache-Control': 'no-cache',
@@ -585,12 +633,6 @@ const server = http.createServer(async (req, res) => {
                 // Send start signal
                 // 发送起始信号
                 res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: messageId, type: "message", role: "assistant", content: [], model: clientRequestedModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } })}\n\n`);
-
-                const reader = response.body?.getReader();
-                if (!reader) {
-                    sendAnthropicError(res, 500, "Response stream was broken");
-                    return;
-                }
 
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -705,7 +747,8 @@ const server = http.createServer(async (req, res) => {
 
                 } catch (streamErr) {
                     log(`[${requestId}] Stream Aborted: ${(streamErr.message || '').slice(0, 80)}`);
-                    closeAllBlocks();
+                    try { closeAllBlocks(); } catch (_) { /* Connection may already be closed */
+                                                          /* 连接可能已断开 */ }
                     try {
                         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: outputTokens || 0, input_tokens: inputTokens || 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } })}\n\n`);
                         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);

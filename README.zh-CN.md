@@ -9,6 +9,7 @@
 ---
 
 ## 一、前提检查
+
 在华为应用市场搜索并安装`DevNode-OH`
 
 在终端运行以下命令，确保环境满足最低要求：
@@ -86,7 +87,7 @@ claude() {
     # └─────────────────────────────────────────────────────────────┘
 
     # ▸ 槽位 1：默认模型
-    local Client_Model_Default="claude-sonnet-4-6"           # 客户端请求的模型名
+    local Client_Model_Default="claude-sonnet-5"             # 客户端请求的模型名
     local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # 上游实际转发的模型名
     local API_for_Default="PRIMARY"                          # 指向的 API 通道 (PRIMARY/SECONDARY)
     local REASONING_for_Default="auto"                       # 推理深度 (auto/max/high/medium/low/none)
@@ -99,7 +100,7 @@ claude() {
     local REASONING_for_Sonnet="auto"
 
     # ▸ 槽位 3：Opus 模型
-    local Client_Model_Opus="claude-opus-4-7"
+    local Client_Model_Opus="claude-opus-5"
     local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Pro"
     local API_for_Opus="PRIMARY"
     local REASONING_for_Opus="auto"
@@ -176,12 +177,12 @@ claude() {
     # ╚══════════════════════════════════════════════════════════════╝
     if [[ "$CAN_BYPASS_PROXY" == "true" ]]; then
         echo "[Gateway] Anthropic 直连模式，跳过代理..."
-        
+
         export ANTHROPIC_BASE_URL="$PRIMARY_BASE_URL"
         export ANTHROPIC_AUTH_TOKEN="$PRIMARY_API_KEY"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
         export CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK=1
-        
+
         # ── 设置上游真实模型名 ─
         export ANTHROPIC_MODEL="$Upstream_Model_Default"
         export ANTHROPIC_DEFAULT_SONNET_MODEL="$Upstream_Model_Sonnet"
@@ -194,7 +195,7 @@ claude() {
     # ╚══════════════════════════════════════════════════════════════╝
     else
         echo "[Gateway] 启动协议转换代理..."
-        
+
         # ── 将槽位与 API 配置通过环境变量传递给 Node 代理 ──
         CLIENT_MODEL_DEFAULT="$Client_Model_Default" \
         UPSTREAM_MODEL_DEFAULT="$Upstream_Model_Default" \
@@ -230,7 +231,7 @@ claude() {
         PROXY_TIMEOUT_MS="${PROXY_TIMEOUT_MS:-300000}" \
         PORT="$PROXY_PORT" \
         nohup node "$PROXY_SCRIPT" > $HOME/.anthropic-proxy.log 2>&1 &
-        
+
         PROXY_PID=$!
         echo "$PROXY_PID" > "$HOME/.anthropic-proxy.pid"
         sleep 2.5
@@ -244,7 +245,7 @@ claude() {
 
         echo "[Gateway] 已启动 (127.0.0.1:${PROXY_PORT})"
         echo ""
-        
+
         export ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}"
         export ANTHROPIC_API_KEY="sk-ant-mock-key-to-local-proxy"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
@@ -318,7 +319,9 @@ $ claude
 ```
 
 ### 功能验证（工具调用测试）：
+
 进入 Claude Code 对话窗口后，随便问一个它需要读取环境的问题，比如：
+
 > "请帮我查看一下我当前的工作盘里都有哪些文件？"
 
 你会惊奇地发现，它会向终端**申请文件系统读取权限**。允许后，它能成功借助我们刚刚双向解析的 **Tool Use** 机制，调用操作系统的底层命令，像官方正版一样提供代码开发、文件编辑和命令行执行能力！
@@ -326,6 +329,7 @@ $ claude
 ---
 
 ## 六、卸载
+
 删除 `~/.zshrc` 中的 `claude` 函数定义，然后删掉代理脚本和 `Claude Code` 相关文件即可：
 
 ```bash
@@ -338,4 +342,5 @@ npx clear-npx-cache         # 回车后将清除所有npx缓存，包含拉取�
 ```
 
 ## 七、许可证
+
 本项目采用[MIT 许可证](LICENSE)
