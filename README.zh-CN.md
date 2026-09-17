@@ -32,19 +32,29 @@ vim ~/anthropic-proxy.mjs
 将项目中的 `anthropic-proxy.mjs` 文件内容完整复制进去（无第三方依赖，开箱即用）。核心能力包括：
 
 - Anthropic Messages ↔ OpenAI Chat Completions 全类型双向翻译
-- SSE 流式双向转换（含 thinking block、text block、tool_use block）
+- SSE 流式双向转换（含 thinking block、text block、tool_use block），块严格串行
+- 内容保真：图片（含 `tool_result` 内嵌图片）、文档、`top_p` / `stop_sequences` 均会转发，不支持的内容块会明确记录日志而非静默丢弃
 - 4 槽位模型路由：Default / Sonnet / Opus / Haiku，各槽位可独立配置上游模型与推理深度
-- 主备双 API 通道（PRIMARY / SECONDARY），槽位级别分流
+- 主备双 API 通道（PRIMARY / SECONDARY）：槽位级别分流 + 传输错误/429/5xx 时自动故障转移（单次）
 - Anthropic 协议直连透传模式（当所有 API 均为 Anthropic 格式时自动跳过协议转换）
 - Tool ID 双向标准化（`toolu_oai_xxx` ↔ `call_xxx`）
 - Reasoning 降级重试（`max → high → 移除参数`）
-- 30 秒 SSE keepalive 心跳
-- 请求级超时控制（默认 5 分钟）
+- 直连与转换两种模式均具备 30 秒 SSE keepalive 心跳
+- 两级超时：连接/响应头超时（`PROXY_TIMEOUT_MS`）+ 覆盖整条流的空闲看门狗（`PROXY_IDLE_TIMEOUT_MS`）
+- 请求体大小上限（默认 64 MiB，超限返回规范的 `413`）与仅限本机的 Origin/Host 访问守卫，可选 `PROXY_AUTH_TOKEN` 令牌
+- `POST /v1/messages/count_tokens`：Anthropic 通道透传上游，OpenAI 通道本地估算
+- 中英双语输出，语言解析遵循固定优先级：显式 `--lang` / `PROXY_LANG` → 系统语言 → 英语兜底
 
 给脚本赋予运行权限：
 
 ```bash
 chmod +x ~/anthropic-proxy.mjs
+```
+
+可选：在本项目目录下运行回归测试：
+
+```bash
+node --test tests/proxy.test.mjs
 ```
 
 ---
@@ -76,7 +86,7 @@ claude() {
     local PRIMARY_BASE_URL="https://api.openai.com"          # 接入端点
 
     # ▸ 备用 API 配置
-    local ENABLE_SECONDARY_API="false"                       # 是否启用备 API 分流
+    local ENABLE_SECONDARY_API="false"                       # 是否启用备 API（槽位分流 + 自动故障转移）
     local SECONDARY_API_FORMAT="openai"                      # 协议格式: "openai" 或 "anthropic"
     local SECONDARY_AUTH_TYPE="api-key"                      # 授权类型: "api-key" 或 "bearer"
     local SECONDARY_API_KEY="sk-your-secondary-key"          # 备用授权密钥
@@ -88,26 +98,26 @@ claude() {
 
     # ▸ 槽位 1：默认模型
     local Client_Model_Default="claude-sonnet-5"             # 客户端请求的模型名
-    local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # 上游实际转发的模型名
+    local Upstream_Model_Default="deepseek-flash"            # 上游实际转发的模型名
     local API_for_Default="PRIMARY"                          # 指向的 API 通道 (PRIMARY/SECONDARY)
     local REASONING_for_Default="auto"                       # 推理深度 (auto/max/high/medium/low/none)
                                                              #           └ auto: 根据 budget_tokens 自动映射，无 budget 时默认 medium
 
     # ▸ 槽位 2：Sonnet 模型
-    local Client_Model_Sonnet="claude-sonnet-4-6"
-    local Upstream_Model_Sonnet="deepseek-ai/DeepSeek-V4-Flash"
+    local Client_Model_Sonnet="claude-sonnet-5"
+    local Upstream_Model_Sonnet="deepseek-flash"
     local API_for_Sonnet="PRIMARY"
     local REASONING_for_Sonnet="auto"
 
     # ▸ 槽位 3：Opus 模型
     local Client_Model_Opus="claude-opus-5"
-    local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Pro"
+    local Upstream_Model_Opus="deepseek-pro"
     local API_for_Opus="PRIMARY"
     local REASONING_for_Opus="auto"
 
     # ▸ 槽位 4：Haiku 模型 (子智能体运行槽位)
     local Client_Model_Haiku="claude-haiku-4-5"
-    local Upstream_Model_Haiku="deepseek-ai/DeepSeek-V4-Flash"
+    local Upstream_Model_Haiku="deepseek-flash"
     local API_for_Haiku="PRIMARY"
     local REASONING_for_Haiku="medium"  # 由于 Haiku 模型不支持在 Claude Code 中设置推理深度，建议手动设置
 
@@ -142,6 +152,7 @@ claude() {
     local PROXY_PORT=4000
     local PROXY_SCRIPT="$HOME/anthropic-proxy.mjs"
     local PROXY_PID=""
+    local PROXY_LANG="zh-CN"
 
     # ── 必填配置空值校验 ──
     if [[ -z "$PRIMARY_API_KEY" || "$PRIMARY_API_KEY" == "sk-your-primary-key" ]]; then
@@ -197,6 +208,9 @@ claude() {
         echo "[Gateway] 启动协议转换代理..."
 
         # ── 将槽位与 API 配置通过环境变量传递给 Node 代理 ──
+        # ── 可选加固变量直接 export 到当前 shell 即可生效： ──
+        # ── PROXY_AUTH_TOKEN、MAX_BODY_BYTES、ALLOWED_ORIGINS、ALLOWED_HOSTS、 ──
+        # ── STREAM_INCLUDE_USAGE、CONVERT_PDF_TO_FILE ──
         CLIENT_MODEL_DEFAULT="$Client_Model_Default" \
         UPSTREAM_MODEL_DEFAULT="$Upstream_Model_Default" \
         MODEL_DEFAULT_API="$API_for_Default" \
@@ -228,7 +242,9 @@ claude() {
         SECONDARY_API_KEY="$SECONDARY_API_KEY" \
         SECONDARY_BASE_URL="$SECONDARY_BASE_URL" \
         \
+        PROXY_LANG="$PROXY_LANG" \
         PROXY_TIMEOUT_MS="${PROXY_TIMEOUT_MS:-300000}" \
+        PROXY_IDLE_TIMEOUT_MS="${PROXY_IDLE_TIMEOUT_MS:-120000}" \
         PORT="$PROXY_PORT" \
         nohup node "$PROXY_SCRIPT" > $HOME/.anthropic-proxy.log 2>&1 &
 
@@ -247,6 +263,7 @@ claude() {
         echo ""
 
         export ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}"
+        # 若设置了 PROXY_AUTH_TOKEN，请将此处改为该令牌的值
         export ANTHROPIC_API_KEY="sk-ant-mock-key-to-local-proxy"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
         export CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK=1
@@ -343,4 +360,4 @@ npx clear-npx-cache         # 回车后将清除所有npx缓存，包含拉取�
 
 ## 七、许可证
 
-本项目采用[MIT 许可证](LICENSE)
+本项目采用 [MIT License](LICENSE)。

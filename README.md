@@ -32,19 +32,29 @@ vim ~/anthropic-proxy.mjs
 Copy the entire content of `anthropic-proxy.mjs` from this project into the file (zero third-party dependencies, ready to run). Core capabilities include:
 
 - Full bidirectional translation between Anthropic Messages and OpenAI Chat Completions
-- Bidirectional SSE streaming conversion (thinking block, text block, tool_use block)
+- Bidirectional SSE streaming conversion (thinking block, text block, tool_use block), strictly sequential blocks
+- Content fidelity: images (including those nested in `tool_result`), documents, `top_p` / `stop_sequences` — anything unsupported is logged instead of silently dropped
 - 4-slot model routing: Default / Sonnet / Opus / Haiku, each independently configurable with upstream model and reasoning depth
-- Primary/backup dual API channels (PRIMARY / SECONDARY), slot-level traffic distribution
+- Primary/backup dual API channels (PRIMARY / SECONDARY): slot-level traffic distribution plus automatic one-shot failover on transport errors, 429 and 5xx
 - Anthropic direct pass-through mode (automatically skips protocol conversion when all APIs use Anthropic format)
 - Tool ID bidirectional normalization (`toolu_oai_xxx` ↔ `call_xxx`)
 - Reasoning degradation retry (`max → high → remove parameter`)
-- 30-second SSE keepalive heartbeat
-- Per-request timeout control (default 5 minutes)
+- 30-second SSE keepalive heartbeat in both pass-through and conversion modes
+- Two-level timeouts: connect/response-header (`PROXY_TIMEOUT_MS`) plus an idle watchdog covering the whole stream (`PROXY_IDLE_TIMEOUT_MS`)
+- Request body limit (default 64 MiB, clean `413`) and a localhost Origin/Host access guard with an optional `PROXY_AUTH_TOKEN`
+- `POST /v1/messages/count_tokens`: upstream pass-through on Anthropic channels, local estimate on OpenAI channels
+- Bilingual (en / zh-CN) output with fixed-priority language resolution: explicit `--lang` / `PROXY_LANG` → system locale → English fallback
 
 Make the script executable:
 
 ```bash
 chmod +x ~/anthropic-proxy.mjs
+```
+
+Optionally, run the regression suite from a checkout of this project:
+
+```bash
+node --test tests/proxy.test.mjs
 ```
 
 ---
@@ -76,7 +86,7 @@ claude() {
     local PRIMARY_BASE_URL="https://api.openai.com"          # API endpoint
 
     # ▸ Backup API Configuration
-    local ENABLE_SECONDARY_API="false"                       # Enable backup API traffic distribution
+    local ENABLE_SECONDARY_API="false"                       # Enable backup API: slot routing + automatic failover
     local SECONDARY_API_FORMAT="openai"                      # Protocol format: "openai" or "anthropic"
     local SECONDARY_AUTH_TYPE="api-key"                      # Auth type: "api-key" or "bearer"
     local SECONDARY_API_KEY="sk-your-secondary-key"          # Backup auth key
@@ -88,26 +98,26 @@ claude() {
 
     # ▸ Slot 1: Default Model
     local Client_Model_Default="claude-sonnet-5"             # Client-requested model name
-    local Upstream_Model_Default="deepseek-ai/DeepSeek-V4-Flash"  # Actual upstream model name for forwarding
+    local Upstream_Model_Default="deepseek-flash"            # Actual upstream model name for forwarding
     local API_for_Default="PRIMARY"                          # API channel (PRIMARY/SECONDARY)
     local REASONING_for_Default="auto"                       # Reasoning depth (auto/max/high/medium/low/none)
                                                              #           └ auto: maps based on budget_tokens, defaults to medium when no budget set
 
     # ▸ Slot 2: Sonnet Model
-    local Client_Model_Sonnet="claude-sonnet-4-6"
-    local Upstream_Model_Sonnet="deepseek-ai/DeepSeek-V4-Flash"
+    local Client_Model_Sonnet="claude-sonnet-5"
+    local Upstream_Model_Sonnet="deepseek-flash"
     local API_for_Sonnet="PRIMARY"
     local REASONING_for_Sonnet="auto"
 
     # ▸ Slot 3: Opus Model
     local Client_Model_Opus="claude-opus-5"
-    local Upstream_Model_Opus="deepseek-ai/DeepSeek-V4-Pro"
+    local Upstream_Model_Opus="deepseek-pro"
     local API_for_Opus="PRIMARY"
     local REASONING_for_Opus="auto"
 
     # ▸ Slot 4: Haiku Model (sub-agent slot)
     local Client_Model_Haiku="claude-haiku-4-5"
-    local Upstream_Model_Haiku="deepseek-ai/DeepSeek-V4-Flash"
+    local Upstream_Model_Haiku="deepseek-flash"
     local API_for_Haiku="PRIMARY"
     local REASONING_for_Haiku="medium"  # Haiku doesn't support reasoning depth setting in Claude Code, so manual configuration is recommended
 
@@ -141,6 +151,7 @@ claude() {
     local PROXY_PORT=4000
     local PROXY_SCRIPT="$HOME/anthropic-proxy.mjs"
     local PROXY_PID=""
+    local PROXY_LANG="en"
 
     # ── Null-value checks for required configuration ──
     if [[ -z "$PRIMARY_API_KEY" || "$PRIMARY_API_KEY" == "sk-your-primary-key" ]]; then
@@ -196,6 +207,9 @@ claude() {
         echo "[Gateway] Starting protocol conversion proxy..."
 
         # ── Pass slot and API configurations to the Node proxy via env vars ──
+        # ── Optional hardening vars can simply be exported in your shell: ──
+        # ── PROXY_AUTH_TOKEN, MAX_BODY_BYTES, ALLOWED_ORIGINS, ALLOWED_HOSTS, ──
+        # ── STREAM_INCLUDE_USAGE, CONVERT_PDF_TO_FILE ──
         CLIENT_MODEL_DEFAULT="$Client_Model_Default" \
         UPSTREAM_MODEL_DEFAULT="$Upstream_Model_Default" \
         MODEL_DEFAULT_API="$API_for_Default" \
@@ -227,7 +241,9 @@ claude() {
         SECONDARY_API_KEY="$SECONDARY_API_KEY" \
         SECONDARY_BASE_URL="$SECONDARY_BASE_URL" \
         \
+        PROXY_LANG="$PROXY_LANG" \
         PROXY_TIMEOUT_MS="${PROXY_TIMEOUT_MS:-300000}" \
+        PROXY_IDLE_TIMEOUT_MS="${PROXY_IDLE_TIMEOUT_MS:-120000}" \
         PORT="$PROXY_PORT" \
         nohup node "$PROXY_SCRIPT" > $HOME/.anthropic-proxy.log 2>&1 &
 
@@ -246,6 +262,7 @@ claude() {
         echo ""
 
         export ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}"
+        # When PROXY_AUTH_TOKEN is set, export the same token value here instead
         export ANTHROPIC_API_KEY="sk-ant-mock-key-to-local-proxy"
         export ANTHROPIC_SKIP_CONNECTIVITY_CHECK=1
         export CLAUDE_CODE_SKIP_CONNECTIVITY_CHECK=1
